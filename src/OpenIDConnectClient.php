@@ -213,6 +213,14 @@ class OpenIDConnectClient
      * @var bool Allow OAuth 2 implicit flow; see http://openid.net/specs/openid-connect-core-1_0.html#ImplicitFlowAuth
      */
     private $allowImplicitFlow = false;
+
+    /**
+     * @var bool enables/disables the session based CSRF mitigation
+     * In OAuth 2 code flow disabling the check is not a security issue because the Auth-Code can only be used once.
+     * But be careful in combination with OAuth 2 implicit flow.
+     */
+    private $checkSession = true;
+
     /**
      * @var string
      */
@@ -290,13 +298,15 @@ class OpenIDConnectClient
                 throw new OpenIDConnectClientException('Got response: ' . $token_json->error);
             }
 
-            // Do an OpenID Connect session check
-            if ($_REQUEST['state'] !== $this->getState()) {
-                throw new OpenIDConnectClientException('Unable to determine state');
-            }
+            if($this->checkSession) {
+                // Do an OpenID Connect session check
+                if ($_REQUEST['state'] !== $this->getState()) {
+                    throw new OpenIDConnectClientException('Unable to determine state');
+                }
 
-            // Cleanup state
-            $this->unsetState();
+                // Cleanup state
+                $this->unsetState();
+            }
 
             if (!property_exists($token_json, 'id_token')) {
                 throw new OpenIDConnectClientException('User did not authorize openid scope.');
@@ -319,8 +329,10 @@ class OpenIDConnectClient
             // If this is a valid claim
             if ($this->verifyJWTclaims($claims, $token_json->access_token)) {
 
-                // Clean up the session a little
-                $this->unsetNonce();
+                if($this->checkSession) {
+                    // Clean up the session a little
+                    $this->unsetNonce();
+                }
 
                 // Save the full response
                 $this->tokenResponse = $token_json;
@@ -356,13 +368,15 @@ class OpenIDConnectClient
                 $accessToken = $_REQUEST['access_token'];
             }
 
-            // Do an OpenID Connect session check
-            if ($_REQUEST['state'] !== $this->getState()) {
-                throw new OpenIDConnectClientException('Unable to determine state');
-            }
+            if($this->checkSession) {
+                // Do an OpenID Connect session check
+                if ($_REQUEST['state'] !== $this->getState()) {
+                    throw new OpenIDConnectClientException('Unable to determine state');
+                }
 
-            // Cleanup state
-            $this->unsetState();
+                // Cleanup state
+                $this->unsetState();
+            }
 
             $claims = $this->decodeJWT($id_token, 1);
 
@@ -381,8 +395,10 @@ class OpenIDConnectClient
             // If this is a valid claim
             if ($this->verifyJWTclaims($claims, $accessToken)) {
 
-                // Clean up the session a little
-                $this->unsetNonce();
+                if($this->checkSession) {
+                    // Clean up the session a little
+                    $this->unsetNonce();
+                }
 
                 // Save the id token
                 $this->idToken = $id_token;
@@ -595,21 +611,26 @@ class OpenIDConnectClient
         $auth_endpoint = $this->getProviderConfigValue('authorization_endpoint');
         $response_type = 'code';
 
-        // Generate and store a nonce in the session
-        // The nonce is an arbitrary value
-        $nonce = $this->setNonce($this->generateRandString());
-
-        // State essentially acts as a session key for OIDC
-        $state = $this->setState($this->generateRandString());
-
         $auth_params = array_merge($this->authParams, array(
             'response_type' => $response_type,
             'redirect_uri' => $this->getRedirectURL(),
             'client_id' => $this->clientID,
-            'nonce' => $nonce,
-            'state' => $state,
             'scope' => 'openid'
         ));
+
+        if($this->checkSession) {
+            // Generate and store a nonce in the session
+            // The nonce is an arbitrary value
+            $nonce = $this->setNonce($this->generateRandString());
+
+            // State essentially acts as a session key for OIDC
+            $state = $this->setState($this->generateRandString());
+
+            $auth_params = array_merge($auth_params, array(
+                'nonce' => $nonce,
+                'state' => $state
+            ));
+        }
 
         // If the client has been registered with additional scopes
         if (count($this->scopes) > 0) {
@@ -623,7 +644,9 @@ class OpenIDConnectClient
 
         $auth_endpoint .= (strpos($auth_endpoint, '?') === false ? '?' : '&') . http_build_query($auth_params, null, '&', $this->enc_type);
 
-        $this->commitSession();
+        if($this->checkSession) {
+            $this->commitSession();
+        }
         $this->redirect($auth_endpoint);
     }
 
@@ -937,7 +960,7 @@ class OpenIDConnectClient
         }
         return (($this->issuerValidator->__invoke($claims->iss))
             && (($claims->aud === $this->clientID) || in_array($this->clientID, $claims->aud, true))
-            && ($claims->nonce === $this->getNonce())
+            && (!$this->checkSession || $claims->nonce === $this->getNonce())
             && ( !isset($claims->exp) || ((gettype($claims->exp) === 'integer') && ($claims->exp >= time() - $this->leeway)))
             && ( !isset($claims->nbf) || ((gettype($claims->nbf) === 'integer') && ($claims->nbf <= time() + $this->leeway)))
             && ( !isset($claims->at_hash) || $claims->at_hash === $expecte_at_hash )
@@ -1267,6 +1290,26 @@ class OpenIDConnectClient
     public function getAllowImplicitFlow()
     {
         return $this->allowImplicitFlow;
+    }
+
+    /**
+     * @return bool
+     */
+    public function getCheckSession()
+    {
+        return $this->checkSession;
+    }
+
+    /**
+     * Enables/Disables the session based CSRF mitigation
+     * In OAuth 2 code flow disabling the check is not a security issue because the Auth-Code can only be used once.
+     * But be careful in combination with OAuth 2 implicit flow.
+     *
+     * @param bool $checkSession
+     */
+    public function setCheckSession($checkSession)
+    {
+        $this->checkSession = $checkSession;
     }
 
     /**
